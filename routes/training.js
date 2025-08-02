@@ -4,6 +4,7 @@ const TrainingNeed = require('../models/TrainingNeed');
 const auth = require('../middleware/authMiddleware');
 const User = require('../models/User');
 const mongoose = require('mongoose');
+const sendEmail = require('../sendEmail');
 
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 // Submit training request (Employee)
@@ -11,15 +12,32 @@ router.post('/submit', auth, async (req, res) => {
   try {
     let status = 'Pending_Manager';
     let assignedManager = null;
+    let notifyToEmail = null;
+    let notifyToName = null;
 
     if (req.user.role === 'manager') {
       status = 'Pending_HOD';
+      const hod = await User.findOne({ role: 'hod', department: req.user.department });
+      if (hod) {
+        notifyToEmail = hod.email;
+        notifyToName = hod.name;
+      }
 
     } else if (req.user.role === 'hod') {
       status = 'Pending_HR';
+      const hr = await User.findOne({ role: 'hr' });
+      if (hr) {
+        notifyToEmail = hr.email;
+        notifyToName = hr.name;
+      }
 
     } else if (req.user.role === 'hr') {
       status = 'Pending_Admin';
+      const admin = await User.findOne({ role: 'admin' });
+      if (admin) {
+        notifyToEmail = admin.email;
+        notifyToName = admin.name;
+      }
 
     } else if (req.user.role === 'employee') {
       const userDoc = await User.findById(req.user._id).select('manager');
@@ -27,6 +45,12 @@ router.post('/submit', auth, async (req, res) => {
         return res.status(400).json({ msg: 'No manager assigned to this employee' });
       }
       assignedManager = userDoc.manager;
+
+      const manager = await User.findById(assignedManager);
+      if (manager) {
+        notifyToEmail = manager.email;
+        notifyToName = manager.name;
+      }
     }
 
     const timestamp = Date.now().toString().slice(-6);
@@ -39,10 +63,24 @@ router.post('/submit', auth, async (req, res) => {
       ...req.body,
       requestNumber,
       status,
-      manager: assignedManager  
+      manager: assignedManager
     });
 
     await trainingNeed.save();
+
+    // Send email to the reviewer
+    if (notifyToEmail) {
+      await sendEmail({
+        to: notifyToEmail,
+        subject: 'New Training Request Awaiting Your Review',
+        html: `
+          <p>Dear ${notifyToName},</p>
+          <p>A new training request <strong>${requestNumber}</strong> has been submitted by <b>${req.user.name}</b> from <b>${req.user.department}</b> department.</p>
+          <p>Please login to the TNA portal to review it.</p>
+        `
+      });
+    }
+
     res.json({ msg: 'Training request submitted successfully', requestNumber });
 
   } catch (err) {
@@ -50,6 +88,7 @@ router.post('/submit', auth, async (req, res) => {
     res.status(500).json({ msg: 'Server error' });
   }
 });
+
 
 
 
@@ -132,31 +171,45 @@ router.patch('/manager-review/:id', auth, async (req, res) => {
 
   if (req.user.role !== 'manager') return res.status(403).send('Forbidden');
 
-  const request = await TrainingNeed.findById(req.params.id);
+  const request = await TrainingNeed.findById(req.params.id).populate('user');
 
   if (!request) return res.status(404).send('Training request not found');
 
-  // Check if this manager is the assigned manager
   if (!request.manager || request.manager.toString() !== req.user._id.toString()) {
     return res.status(403).send('You are not assigned to this request');
   }
 
-  // Prevent duplicate review
   if (request.status !== 'Pending_Manager') {
     return res.status(400).send('Request already reviewed or not in Pending_Manager state');
   }
 
+  // Update request status
   if (decision === 'approve') {
     request.status = 'Pending_HOD';
-    request.reviewedByManager = req.user._id;
   } else {
     request.status = 'Rejected_By_Manager';
-    request.reviewedByManager = req.user._id;
   }
+  request.reviewedByManager = req.user._id;
 
   await request.save();
+
+  // Notify the original requester
+  if (request.user?.email) {
+    await sendEmail({
+      to: request.user.email,
+      subject: `Training Request ${decision === 'approve' ? 'Approved' : 'Rejected'} by Manager`,
+      html: `
+        <p>Dear ${request.user.name},</p>
+        <p>Your training request <b>${request.requestNumber}</b> has been <strong>${decision.toUpperCase()}</strong> by your manager.</p>
+        <p>Current Status: <b>${request.status}</b></p>
+        <p>Please login to the TNA portal for more details.</p>
+      `
+    });
+  }
+
   res.json({ msg: `Training request ${request.status}` });
 });
+
 
 
 
@@ -172,19 +225,41 @@ router.get('/hod-review', auth, async (req, res) => {
   res.json(requests);
 });
 
+
 router.patch('/hod-review/:id', auth, async (req, res) => {
   if (req.user.role !== 'hod') return res.status(403).send('Forbidden');
 
   const { decision } = req.body;
   const status = decision === 'approve' ? 'Approved_By_HOD' : 'Rejected_By_HOD';
 
-  await TrainingNeed.findByIdAndUpdate(req.params.id, {
-    status,
-    reviewedByHOD: req.user._id,
-  });
+  const request = await TrainingNeed.findByIdAndUpdate(
+    req.params.id,
+    {
+      status,
+      reviewedByHOD: req.user._id,
+    },
+    { new: true }
+  ).populate('user');
+
+  if (!request) return res.status(404).send('Request not found');
+
+  // Notify the requester
+  if (request.user?.email) {
+    await sendEmail({
+      to: request.user.email,
+      subject: `Training Request ${decision === 'approve' ? 'Approved' : 'Rejected'} by HOD`,
+      html: `
+        <p>Dear ${request.user.name},</p>
+        <p>Your training request <strong>${request.requestNumber}</strong> has been <strong>${decision.toUpperCase()}</strong> by the HOD.</p>
+        <p>Current Status: <b>${request.status}</b></p>
+        <p>Please login to the TNA portal for more details.</p>
+      `
+    });
+  }
 
   res.json({ msg: `Training request ${status}` });
 });
+
 
 
 
@@ -210,10 +285,30 @@ router.patch('/admin-review/:id', auth, async (req, res) => {
   const { decision } = req.body;
   const status = decision === 'approve' ? 'Approved_By_Admin' : 'Rejected_By_Admin';
 
-  await TrainingNeed.findByIdAndUpdate(req.params.id, {
-    status,
-    reviewedByAdmin: req.user._id,
-  });
+  const request = await TrainingNeed.findByIdAndUpdate(
+    req.params.id,
+    {
+      status,
+      reviewedByAdmin: req.user._id,
+    },
+    { new: true }
+  ).populate('user');
+
+  if (!request) return res.status(404).json({ msg: 'Request not found' });
+
+  // Notify the requester via email
+  if (request.user?.email) {
+    await sendEmail({
+      to: request.user.email,
+      subject: `Training Request ${decision === 'approve' ? 'Approved' : 'Rejected'} by Admin`,
+      html: `
+        <p>Dear ${request.user.name},</p>
+        <p>Your training request <strong>${request.requestNumber}</strong> has been <strong>${decision.toUpperCase()}</strong> by the Admin.</p>
+        <p>Final Status: <b>${request.status}</b></p>
+        <p>Please login to the TNA portal to review the details.</p>
+      `
+    });
+  }
 
   res.json({ msg: `Training request ${status}` });
 });
@@ -254,14 +349,34 @@ router.patch('/hr-review/:id', auth, async (req, res) => {
   if (req.user.role !== 'hr') return res.status(403).send('Forbidden');
 
   const { decision } = req.body;
-  const status = decision === 'approve' ? 'Approved_By_HR' : 'Rejected_By_HR';
+  const finalStatus = decision === 'approve' ? 'Pending_Admin' : 'Rejected_By_HR';
 
-  await TrainingNeed.findByIdAndUpdate(req.params.id, {
-    status: decision === 'approve' ? 'Pending_Admin' : status,
-    reviewedByHR: req.user._id,
-  });
+  const request = await TrainingNeed.findByIdAndUpdate(
+    req.params.id,
+    {
+      status: finalStatus,
+      reviewedByHR: req.user._id,
+    },
+    { new: true }
+  ).populate('user');
 
-  res.json({ msg: `Training request ${status}` });
+  if (!request) return res.status(404).json({ msg: 'Request not found' });
+
+  // Notify the user who created the request
+  if (request.user?.email) {
+    await sendEmail({
+      to: request.user.email,
+      subject: `Training Request ${decision === 'approve' ? 'Approved' : 'Rejected'} by HR`,
+      html: `
+        <p>Dear ${request.user.name},</p>
+        <p>Your training request <strong>${request.requestNumber}</strong> has been <strong>${decision.toUpperCase()}</strong> by HR.</p>
+        <p>Current Status: <b>${finalStatus}</b></p>
+        <p>Please log in to the TNA portal to track progress.</p>
+      `
+    });
+  }
+
+  res.json({ msg: `Training request ${finalStatus}` });
 });
 
 router.delete('/:id', async (req, res) => {
