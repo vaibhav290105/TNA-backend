@@ -4,15 +4,37 @@ const Response = require('../models/Response');
 const auth = require('../middleware/authMiddleware');
 const User = require('../models/User');
 const router = express.Router();
+const sendEmail = require('../utils/sendEmail');
 
 
 router.post('/create', auth, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).send('Forbidden');
+
   const { title, questions, assignedTo } = req.body;
+
   const survey = new Survey({ title, questions, assignedTo });
   await survey.save();
+
+  // Fetch user emails
+  const users = await User.find({ _id: { $in: assignedTo } });
+
+  for (const user of users) {
+    if (user.email) {
+      await sendEmail({
+        to: user.email,
+        subject: `New Feedback Survey Assigned: ${title}`,
+        html: `
+          <p>Dear ${user.name},</p>
+          <p>A new feedback form titled <strong>${title}</strong> has been assigned to you.</p>
+          <p>Please log in to the TNA portal to complete the survey.</p>
+        `
+      });
+    }
+  }
+
   res.json(survey);
 });
+
 
 
 router.get('/assigned', auth, async (req, res) => {
@@ -143,3 +165,4 @@ router.patch('/update/:id', auth, async (req, res) => {
 });
 
 module.exports = router;
+
