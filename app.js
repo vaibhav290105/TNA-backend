@@ -6,7 +6,12 @@ const path = require('path');
 const app = express();
 connectDB();
 
-app.use(cors());
+app.use(cors({
+  origin: 'https://tna-frontend-bmht.onrender.com',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
 app.use(express.json());
 
 app.use('/api/auth', require('./routes/auth'));
