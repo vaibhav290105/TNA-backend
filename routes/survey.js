@@ -4,7 +4,7 @@ const Response = require('../models/Response');
 const auth = require('../middleware/authMiddleware');
 const User = require('../models/User');
 const router = express.Router();
-const sendEmail = require('../utils/sendEmail');
+const sendEmail = require('../sendEmail');
 
 
 router.post('/create', auth, async (req, res) => {
