@@ -191,7 +191,7 @@ router.post('/request-reset', async (req, res) => {
   user.resetTokenExpiry = Date.now() + 3600000; // 1 hour
   await user.save();
 
-  const resetLink = `http://localhost:3000/reset-password/${token}`;
+  const resetLink = `https://tna-frontend-bmht.onrender.com/reset-password/${token}`;
 
   // Set up nodemailer
   const transporter = nodemailer.createTransport({
